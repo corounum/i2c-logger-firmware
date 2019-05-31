@@ -42,18 +42,27 @@ byte i2c_buffer[BUFFSIZE];
 byte specifiers[SPECSIZE];
 byte data[BUFFSIZE];
 bool has_message = false;
-unsigned long sequence_number = 0;
+unsigned long sequence_number = 0UL;
+unsigned long log_file_number = 1UL;
+
 
 ///////////////////////////////////////////////////////////////
 // MICROSD CONFIGURATION
-
 //On OpenLog this is pin 10
 #define SD_CHIP_SELECT 10
 //This is the name for the file when you're in sequential mode
 #define SEQ_FILENAME "LOBSTER.TXT"
 
-SdFat sd;
+#define SINGLE_LOG 0x00
+#define MULTI_LOG  0x01
+#define LOG_MODE   MULTI_LOG
+#define LOCATION_FILE_NUMBER_LSB    0x03
+#define LOCATION_FILE_NUMBER_MSB    0x04
+// This only matters when in MULTI_LOG mode.
+#define MAX_LINES_PER_LOG 0xFF
 
+
+SdFat sd;
 
 //Blinking LED error codes
 #define ERROR_SD_INIT      3
@@ -99,7 +108,7 @@ void setup() {
   if (clean_start) {
     blinkN(3, 100);
     Serial.println("CLEAN START");
-    init_card();
+    init_log_file();
   } else {
     blinkN(10, 100);
   }
@@ -266,10 +275,21 @@ void blinkN (int n, int dur) {
 ///////////////////////////////////////////////////////////////
 // OPENLOG THEFT
 // This is where I grab and hack code from OpenLog.
-// I always write to the same file.
 
-void init_card(void)
+// Initialize the single log file. Note that there is a
+// constant LOG_MODE that will chose whether I am logging to a
+// single file, or multiple files.
+void init_log_file(void)
 {
+  if (LOG_MODE == SINGLE_LOG) {
+    init_single_log();
+  } else {
+    // There is no init for multilog. It is self contained.
+    // init_multi_log();
+  }
+}
+
+void init_single_log() {
   SdFile the_file;
 
   // Try to create sequential file
@@ -277,11 +297,127 @@ void init_card(void)
   {
     // The file could not be created. Something must be wrong.
     Serial.println(F("Error creating SEQLOG"));
+    systemError(ERROR_FILE_OPEN);
   } else {
     // Immediately close the file. This makes sure it exists.
     the_file.close();
   }
 }
+
+
+void write_multi_log_number() {
+  byte lsb, msb;
+
+  //Record new_file number to EEPROM
+  lsb = (byte)(log_file_number & 0x00FF);
+  msb = (byte)((log_file_number & 0xFF00) >> 8);
+
+  EEPROM.write(LOCATION_FILE_NUMBER_LSB, lsb); // LSB
+
+  if (EEPROM.read(LOCATION_FILE_NUMBER_MSB) != msb) {
+    EEPROM.write(LOCATION_FILE_NUMBER_MSB, msb); // MSB
+  }
+}
+
+void read_multi_log_number() {
+  byte msb, lsb;
+  int newFileNumber;
+
+  //Combine two 8-bit EEPROM spots into one 16-bit number
+  lsb = EEPROM.read(LOCATION_FILE_NUMBER_LSB);
+  msb = EEPROM.read(LOCATION_FILE_NUMBER_MSB);
+
+  newFileNumber = msb;
+  newFileNumber = newFileNumber << 8;
+  newFileNumber |= lsb;
+
+  //If both EEPROM spots are 255 (0xFF), that means they are un-initialized (first time OpenLog has been turned on)
+  //Let's init them both to 0
+  if ((lsb == 255) && (msb == 255))
+  {
+    newFileNumber = 1;
+    EEPROM.write(LOCATION_FILE_NUMBER_LSB, 0x01);
+    EEPROM.write(LOCATION_FILE_NUMBER_MSB, 0x00);
+  }
+
+  //There is a weird EEPROM power-up glitch that causes the newFileNumber to advance
+  //arbitrarily. This fixes that problem.
+  if (newFileNumber > 0) newFileNumber--;
+
+  log_file_number = newFileNumber;
+}
+
+//Log to a new file everytime the system boots
+//Checks the spots in EEPROM for the next available LOG# file name
+//Updates EEPROM and then appends to the new log file.
+//Limited to 65535 files but this should not always be the case.
+void open_multi_log(SdFile* the_file)
+{
+  // Read the EEPROM into memory.
+  read_multi_log_number();
+
+  // Make sure we're not too far along. If so, increment and write.
+  if ((sequence_number % MAX_LINES_PER_LOG) == 0) {
+    log_file_number += 1;
+    write_multi_log_number();
+  }
+
+  //The above code looks like it will forever loop if we ever create 65535 logs
+  //Let's quit if we ever get to 65534
+  //65534 logs is quite possible if you have a system with lots of power on/off cycles
+  if (log_file_number == 65534)
+  {
+    //Gracefully drop out to command prompt with some error
+    Serial.print(F("!Too many logs:1!"));
+    return (0); //Bail!
+  }
+
+  //Search for next available log spot
+  static char newFileName[13]; //Bug fix from ystark's pull request: https://github.com/sparkfun/OpenLog/pull/189
+  while (1)
+  {
+    sprintf_P(newFileName, PSTR("LOG%05u.TXT"), log_file_number); //Splice the new file number into this file name
+
+    // O_CREAT - create the file if it does not exist
+    // O_APPEND - seek to the end of the file prior to each write
+    // O_WRITE - open for write
+    // O_EXCL - if O_CREAT and O_EXCEL are set, open() shall fail if file exists
+
+    //Try to open file, if it opens (file doesn't exist), then break
+    if (the_file->open(newFileName, O_CREAT | O_EXCL | O_APPEND | O_WRITE)) {
+      break;
+    }
+
+    //Try to open file and see if it is empty. If so, use it.
+    if (the_file->open(newFileName, O_READ))
+    {
+      if (the_file->fileSize() == 0)
+      {
+        // Use the file. It is empty.
+        the_file->close();
+        the_file->open(newFileName, O_CREAT | O_APPEND | O_WRITE);
+        return;
+      } else {
+        // The file is not empty. Close it, and try again.
+        the_file->close();
+      }
+
+    }
+
+    //Try the next number
+    log_file_number++;
+    if (log_file_number > 65533) //There is a max of 65534 logs
+    {
+      Serial.print(F("!Too many logs:2!"));
+      return; //Bail!
+    }
+  }
+
+  write_multi_log_number();
+
+  // the_file.close(); //Close this new file we just opened
+}
+
 
 //Log to the same file every time the system boots, sequentially
 //Checks to see if the file SEQLOG.txt is available
@@ -293,16 +429,21 @@ void flush_cache_to_sd(void)
 {
   SdFile the_file;
 
-  // Try to create sequential file
-  if (!the_file.open(SEQ_FILENAME, O_CREAT | O_WRITE))
-  {
-    // The file could not be created. Something must be wrong.
-    Serial.println(F("Error creating SEQLOG"));
+  noInterrupts();
+
+  if (LOG_MODE == SINGLE_LOG) {
+    // O_CREAT - create the file if it does not exist
+    // O_APPEND - seek to the end of the file prior to each write
+    // O_WRITE - open for write
+    if (!the_file.open(SEQ_FILENAME, O_CREAT | O_APPEND | O_WRITE)) {
+      systemError(ERROR_FILE_OPEN);
+    }
   } else {
-    // Immediately close the file. This makes sure it exists.
-    the_file.close();
-    append_cache_to_datafile();
+    open_multi_log(&the_file);
   }
+  append_cache_to_datafile(&the_file);
+
+  interrupts();
 }
 
 //This is the most important function of the device. These loops have been tweaked as much as possible.
@@ -311,26 +452,18 @@ void flush_cache_to_sd(void)
 //Does not exit until escape character is received the correct number of times
 //Returns 0 on error
 //Returns 1 on success
-byte append_cache_to_datafile() {
-  SdFile the_file;
-
-  // O_CREAT - create the file if it does not exist
-  // O_APPEND - seek to the end of the file prior to each write
-  // O_WRITE - open for write
-  if (!the_file.open(SEQ_FILENAME, O_CREAT | O_APPEND | O_WRITE)) {
-    systemError(ERROR_FILE_OPEN);
-  }
+byte append_cache_to_datafile(SdFile* the_file) {
 
   // This is a trick to make sure first cluster is allocated
   // Found in Bill's example/beta code (?)
-  if (the_file.fileSize() == 0) {
-    the_file.rewind();
-    the_file.sync();
+  if (the_file->fileSize() == 0) {
+    the_file->rewind();
+    the_file->sync();
   }
 
-  sram_copy_data(&the_file);
+  sram_copy_data(the_file);
 
-  the_file.sync(); //Sync the card before we go to sleep
+  the_file->sync(); //Sync the card before we go to sleep
 
   // power_timer0_disable(); //Shut down peripherals we don't need
   // power_spi_disable();
@@ -348,7 +481,7 @@ byte append_cache_to_datafile() {
   // power_spi_enable(); //After wake up, power up peripherals
   // power_timer0_enable();
 
-  the_file.close(); // Done recording, close out the file
+  the_file->close(); // Done recording, close out the file
 
   Serial.println(F("~")); // Indicate a successful record
 
