@@ -34,7 +34,6 @@ enum MachineState {
   ERASE_CACHE = 0x31,
   RESET_SEQUENCE_NUMBER = 0x3F,
 
-
   FROM_I2C     = 0xBE,
 };
 
@@ -49,13 +48,20 @@ unsigned long log_file_number = 1UL;
 ///////////////////////////////////////////////////////////////
 // MICROSD CONFIGURATION
 //On OpenLog this is pin 10
+// HARDWARE PIN CONSTANTS
 #define SD_CHIP_SELECT 10
+// The SRAM pin is set in the header.
+#define SPI_SPEED SD_SCK_MHZ(1)
+
+// LIVE
+// #define SD_CHIP_SELECT 20
+
 //This is the name for the file when you're in sequential mode
 #define SEQ_FILENAME "LOBSTER.TXT"
 
 #define SINGLE_LOG 0x00
 #define MULTI_LOG  0x01
-#define LOG_MODE   MULTI_LOG
+#define LOG_MODE   SINGLE_LOG
 #define LOCATION_FILE_NUMBER_LSB    0x03
 #define LOCATION_FILE_NUMBER_MSB    0x04
 // This only matters when in MULTI_LOG mode.
@@ -72,6 +78,26 @@ SdFat sd;
 #define ERROR_ROOT_INIT   8
 #define ERROR_FILE_OPEN   9
 
+bool sd_init() {
+  bool clean_start = true;
+  //Setup SD & FAT
+  pinMode(SD_CHIP_SELECT, OUTPUT);
+  digitalWrite(SD_CHIP_SELECT, HIGH);
+  delay(10);
+
+  if (!sd.begin(SD_CHIP_SELECT, SPI_SPEED)) {
+    systemError(ERROR_CARD_INIT);
+    clean_start = false;
+  }
+
+  //Change to root directory. All new file creation will be in root.
+  if (!sd.chdir()) {
+    systemError(ERROR_ROOT_INIT);
+    clean_start = false;
+  }
+  return clean_start;
+
+}
 
 // // // // // // // // //
 // SETUP
@@ -89,19 +115,16 @@ void setup() {
     i2c_buffer[ndx] = 0x00;
   }
 
-  //Setup SD & FAT
-  if (!sd.begin(SD_CHIP_SELECT, SPI_FULL_SPEED)) {
-    systemError(ERROR_CARD_INIT);
-    clean_start = false;
-  }
-
-  //Change to root directory. All new file creation will be in root.
-  if (!sd.chdir()) {
-    systemError(ERROR_ROOT_INIT);
-    clean_start = false;
+  clean_start = sd_init();
+  int count = 10;
+  if (!clean_start && count < 10) {
+    delay(100);
+    sd_init();
+    count += 1;
   }
 
   if (!sram_init()) {
+    Serial.println("SRAM NO INIT");
     clean_start = false;
   }
 
@@ -110,7 +133,7 @@ void setup() {
     Serial.println("CLEAN START");
     init_log_file();
   } else {
-    blinkN(10, 100);
+    Serial.println("BAD START");
   }
 
 }
@@ -203,7 +226,8 @@ bool interpret() {
           // At the least, this should reset the pointer.
           if (!sram_has_space(pkt_length + msg_length + 1)) {
             flush_cache_to_sd();
-            sram_init();
+            sram_reset_pointer();
+
           }
           // Now, I know I have space for this data.
 
@@ -219,11 +243,12 @@ bool interpret() {
       // Serial.println("FLUSHING CACHE TO SD");
       // Here I would need to copy from flash memory to the SD card.
       flush_cache_to_sd();
+      sram_reset_pointer();
       break;
 
     case ERASE_CACHE:
       // Serial.println("ERASING CACHE");
-      sram_init();
+      sram_reset_pointer();
       break;
 
     case RESET_SEQUENCE_NUMBER:
@@ -369,7 +394,7 @@ void open_multi_log(SdFile* the_file)
   {
     //Gracefully drop out to command prompt with some error
     Serial.print(F("!Too many logs:1!"));
-    return (0); //Bail!
+    return; //Bail!
   }
 
   //Search for next available log spot

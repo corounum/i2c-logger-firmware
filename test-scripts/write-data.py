@@ -11,6 +11,7 @@ neo[0] = (10, 0, 0)
 
 ADDR = 0x2A
 i2c = busio.I2C(board.SCL, board.SDA)
+time.sleep(0.1)
 
 def try_lock():
     while not i2c.try_lock():
@@ -86,6 +87,7 @@ def i2c_cmd(the_bytes):
         i2c.writeto(ADDR, bytes(the_bytes), stop = True)
     finally:
         i2c.unlock()
+    # time.sleep(0.05)
 
 def flush_cache():
     i2c_cmd([0x30])
@@ -106,17 +108,20 @@ def scan_bus():
 
 # scan_bus()
 erase_cache()
-reset_sequence_number()
+# reset_sequence_number()
 
 count = 0
 
 def minutes(per_sec, num_min):
     return per_sec * 60 * num_min
 
-per_sec = 10
+per_sec = 20
 total_min = 60 * 6
+# minutes(per_sec, total_min)
 
-while count < minutes(per_sec, total_min):
+prev_time = 0
+
+while count < 100:
     count = count + 1
     pkt = [count,
            # YY, MM, DD,
@@ -129,6 +134,8 @@ while count < minutes(per_sec, total_min):
            # This is a worst-case scenario.
            random.randint(0, 4096), random.randint(0, 4096), random.randint(0, 4096)
            ]
+    pkt = [count, prev_time, 42, 255, 0xDEADBEEF]
+
     # print(pkt)
     # https://learn.adafruit.com/arduino-to-circuitpython/time
     # Seems to be taking around 20-25ms. The variability is because, sometimes,
@@ -136,6 +143,7 @@ while count < minutes(per_sec, total_min):
     start = time.monotonic()
     data_packet(pkt)
     end = time.monotonic()
+    prev_time = int(math.floor((end - start) * 1000))
     # print("T: " + str((end - start) * 1000))
 
     neo[0] = (random.randint(64, 127), random.randint(64, 127), random.randint(64, 127))

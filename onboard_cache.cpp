@@ -1,12 +1,8 @@
-#include "sram_cache.h"
+#include "onboard_cache.h"
 #include "stdint.h"
-#include "DebugMacros.h"
 
-#define CHECKSRAMWRITES
-
-uint16_t ptr = 0;
-//SRAM memory(SRAM_SS_PIN);
-SRAM_23LC memory(&SPI_PERIPHERAL, SRAM_SS_PIN, SRAM_23K256);
+int ptr = 0;
+byte SRAM[SRAM_SIZE];
 
 void sram_set_pointer(int p) {
   ptr = p;
@@ -14,9 +10,7 @@ void sram_set_pointer(int p) {
 
 bool sram_write_byte(byte b) {
   if (ptr < SRAM_SIZE) {
-    // SRAM[ptr] = b;
-    memory.writeByte(ptr, b);
-    // Serial.println("[" + String(b, HEX) + "] == [" + String(memory.readByte(ptr), HEX) + "] ");
+    SRAM[ptr] = b;
     ptr += 1;
     return true;
   } else {
@@ -25,35 +19,19 @@ bool sram_write_byte(byte b) {
 }
 
 byte sram_get_byte (int p) {
-  // return SRAM[p];
-  byte b;
-  b = memory.readByte(p);
-  return b;
+  return SRAM[p];
 }
 
 void sram_clear_byte() {
-  // SRAM[ptr] = 0x00;
-  memory.writeByte(ptr, 0x00);
+  SRAM[ptr] = 0x00;
 }
 
 bool sram_init() {
-  /*
-    for (int i = 0 ; i < SRAM_SIZE  ; i++) {
-    //SRAM[i] = 0x00;
-    memory.put(i, 0x00);
-    }
-  */
-  // pinMode(SRAM_SS_PIN, OUTPUT);
-  // digitalWrite(SRAM_SS_PIN, HIGH);
-  // delay(10);
-
-  memory.begin();
+  for (int i = 0 ; i < SRAM_SIZE  ; i++) {
+    SRAM[i] = 0x00;
+  }
   ptr = 0;
   return true;
-}
-
-void sram_reset_pointer() {
-  ptr = 0;
 }
 
 bool sram_has_space(int num_bytes) {
@@ -66,16 +44,15 @@ bool sram_cache_data (byte *specifiers, int num_specifiers, byte *data, int byte
 
   ok &= sram_write_byte(num_specifiers);
 
-  // Bytewise copy. This library allows for a block copy.
-
-    for (int i = 0 ; i < num_specifiers ; i++) {
+  for (int i = 0 ; i < num_specifiers ; i++) {
     //Serial.println("S[" + String(i) + "] = " + String(specifiers[i]));
     ok &= sram_write_byte(specifiers[i]);
-    }
-    for (int i = 0 ; i < bytes ; i++) {
+  }
+  for (int i = 0 ; i < bytes ; i++) {
     //Serial.println("D[" + String(i) + "] = " + String(data[i]));
     ok &= sram_write_byte(data[i]);
-    }
+  }
+
   return ok;
 }
 
@@ -86,7 +63,7 @@ void output_datum (SdFile* the_file, int ndx, int leng, bool last) {
   switch (leng) {
 
     case 1:
-      // Serial.print("D1[" + String(sram_get_byte(ndx)) + "] ");
+      //Serial.print("D1[" + String(sram_get_byte(ndx)) + "]");
       the_file->print(sram_get_byte(ndx));
       break;
 
@@ -96,7 +73,7 @@ void output_datum (SdFile* the_file, int ndx, int leng, bool last) {
         unsigned int lsb = (unsigned int)sram_get_byte(ndx + 1);
         bits16 = msb << 8 | lsb;
 
-        // Serial.print("D2[" + String(msb) + " " + String(lsb) + + " " + String(bits16) + "] ");
+        //Serial.print("D2[" + String(msb) + " " + String(lsb) + + " " + String(n2) + "]");
         the_file->print(bits16);
       }
       break;
@@ -108,12 +85,12 @@ void output_datum (SdFile* the_file, int ndx, int leng, bool last) {
         unsigned long b3  = (unsigned long)sram_get_byte(ndx + 2);
         bits32 = (b1 << 16) | (b2 << 8) | b3;
 
-        // Serial.print("D3[" + String(b1, HEX) + " " + String(b2, HEX) + " " + String(b3, HEX) + " " + String(bits32, HEX) + "] ");
+        //Serial.print("D3[" + String(b1, HEX) + " " + String(b2, HEX) + " " + String(b3, HEX) + " " + String(n3, HEX) + "]");
         the_file->print(bits32);
 
       }
       break;
-
+      
     case 4:
       {
         unsigned long b1  = (unsigned long)sram_get_byte(ndx);
@@ -122,7 +99,7 @@ void output_datum (SdFile* the_file, int ndx, int leng, bool last) {
         unsigned long b4  = (unsigned long)sram_get_byte(ndx + 3);
         bits32 = (b1 << 24) | (b2 << 16) | (b3 << 8) | b4;
 
-        // Serial.print("D3[" + String(b1, HEX) + " " + String(b2, HEX) + " " + String(b3, HEX) + " " + String(bits32, HEX) + "] ");
+        //Serial.print("D3[" + String(b1, HEX) + " " + String(b2, HEX) + " " + String(b3, HEX) + " " + String(n3, HEX) + "]");
         the_file->print(bits32);
 
       }
@@ -135,7 +112,7 @@ void output_datum (SdFile* the_file, int ndx, int leng, bool last) {
     the_file->print(",");
   } else {
     the_file->println();
-    // Serial.println();
+    //Serial.println();
   }
 }
 
